@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CDSS Expert Engine – PBS Integrated</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
+
+    <!-- ── Header ───────────────────────────────────────────────── -->
+    <header class="bg-slate-800 border-b border-slate-700 p-4 flex justify-between items-center shadow-xl">
+        <h1 class="text-xl font-bold text-amber-400">
+            🛡️ CDSS Expert Engine
+            <span class="text-xs text-slate-400 font-normal">PBS Integrated</span>
+        </h1>
+        <div class="flex items-center space-x-2">
+            <input type="password" id="apiKeyInput" placeholder="Enter Gemini API Key"
+                   class="bg-slate-700 text-white border border-slate-600 rounded px-3 py-1 text-sm
+                          focus:outline-none focus:border-amber-500 w-64">
+            <button onclick="saveApiKey()"
+                    class="bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium
+                           px-4 py-1 rounded transition-colors shadow">
+                Save Key
+            </button>
+        </div>
+    </header>
+
+    <!-- ── Main grid ─────────────────────────────────────────────── -->
+    <main class="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- Left panel -->
+        <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-xl flex flex-col space-y-4">
+
+            <!-- Search -->
+            <div>
+                <div class="flex justify-between items-center mb-1">
+                    <label class="text-sm font-semibold text-slate-200">1. Search Australian PBS Database</label>
+                    <div class="flex items-center space-x-2">
+                        <label class="text-xs text-amber-400 cursor-pointer hover:text-amber-300 underline">
+                            📂 Load CSV
+                            <input type="file" id="csvFileInput" accept=".csv" class="hidden">
+                        </label>
+                        <span id="csvStatus" class="text-xs text-amber-400 font-medium">No database loaded</span>
+                    </div>
+                </div>
+                <input type="text" id="searchBox" oninput="searchDrugs()"
+                       placeholder="Type Brand or Generic Name (e.g. Targin, Amoxicillin)…"
+                       class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm
+                              focus:outline-none focus:border-amber-500 text-amber-300">
+                <div id="searchResults"
+                     class="mt-1 bg-slate-900 border border-slate-700 rounded-lg max-h-48
+                            overflow-y-auto hidden divide-y divide-slate-800 z-10"></div>
+            </div>
+
+            <!-- Queue -->
+            <div class="flex-1 flex flex-col min-h-[250px]">
+                <h3 class="text-sm font-semibold text-slate-200 mb-2 flex justify-between items-center">
+                    <span>Current Prescription Queue</span>
+                    <button onclick="clearQueue()" class="text-xs text-red-400 hover:underline">Clear All</button>
+                </h3>
+                <div id="prescriptionQueue"
+                     class="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-3
+                            overflow-y-auto space-y-2 text-sm text-slate-400 italic">
+                    No medications added yet. Search above to build the prescription.
+                </div>
+            </div>
+
+            <button onclick="runProClinicalReview()" id="reviewBtn"
+                    class="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold py-3
+                           rounded-lg transition-colors flex justify-center items-center space-x-2 shadow-lg">
+                <span>⚡ Run Pro Clinical Review</span>
+            </button>
+        </div>
+
+        <!-- Right panel -->
+        <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-xl flex flex-col min-h-[500px]">
+            <h2 class="text-lg font-semibold text-slate-200 border-b border-slate-700 pb-2
+                        flex justify-between items-center">
+                <span>2. Clinical Decision Support Report</span>
+                <span id="loadingStatus"
+                      class="text-xs text-amber-400 animate-pulse hidden">Pro Reasoning Engine Active…</span>
+            </h2>
+            <div id="reviewResult"
+                 class="flex-1 mt-4 p-4 bg-slate-900 rounded-lg text-sm overflow-y-auto
+                        leading-relaxed text-slate-300 max-h-[550px] prose prose-invert">
+                <p class="text-slate-500 italic">
+                    Awaiting medication queue submission…
+                    Reports will be generated using authoritative global guidelines.
+                </p>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- ── Script ────────────────────────────────────────────────── -->
+    <script>
+    // ── State ──────────────────────────────────────────────────────
+    var pbsDatabase  = [];
+    var currentQueue = [];
+    var colBrand     = 'brand_name';
+    var colGeneric   = 'generic_name';
+    var colRoute     = 'route';
+
+    // ── Init ───────────────────────────────────────────────────────
+    window.addEventListener('DOMContentLoaded', function () {
+        var saved = localStorage.getItem('GEMINI_API_KEY');
+        if (saved) document.getElementById('apiKeyInput').value = saved;
+
+        // Auto-load via fetch (works on GitHub Pages and any web server)
+        var statusEl = document.getElementById('csvStatus');
+        statusEl.textContent = '⏳ Loading database…';
+        fetch('./pbs_data_canonical.csv')
+            .then(function (res) {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.text();
+            })
+            .then(function (csvText) {
+                parseCsvIntoDatabase(csvText);
+            })
+            .catch(function () {
+                statusEl.textContent = '👆 Click 📂 Load CSV to load manually';
+                statusEl.className = 'text-xs text-amber-400 font-medium';
+            });
+
+        // Manual file picker (fallback for local file:// usage)
+        document.getElementById('csvFileInput').addEventListener('change', function (e) {
+            if (e.target.files[0]) parseCsvIntoDatabase(e.target.files[0]);
+        });
+    });
+
+    // ── CSV loading ────────────────────────────────────────────────
+    function parseCsvIntoDatabase(source) {
+        var statusEl = document.getElementById('csvStatus');
+        // source can be: raw CSV string (from fetch), or a File object (from file picker)
+        var isRawText = typeof source === 'string' && source.includes('\n');
+        Papa.parse(source, {
+            download: false,
+            header: true,
+            skipEmptyLines: true,
+            complete: function (results) {
+                // Normalise every column key: strip BOM, trim, lowercase, spaces→underscore
+                pbsDatabase = results.data.map(function (row) {
+                    var clean = {};
+                    Object.keys(row).forEach(function (k) {
+                        var key = k.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/\s+/g, '_');
+                        clean[key] = (row[k] || '').trim();
+                    });
+                    return clean;
+                });
+
+                if (pbsDatabase.length > 0) {
+                    var keys = Object.keys(pbsDatabase[0]);
+                    colBrand   = keys.find(function(k){ return /brand/i.test(k); })
+                                 || keys.find(function(k){ return /item.name/i.test(k); })
+                                 || keys[2] || keys[0];
+                    colGeneric = keys.find(function(k){ return /generic/i.test(k); })
+                                 || keys.find(function(k){ return /active|ingredient/i.test(k); })
+                                 || keys[1] || keys[0];
+                    colRoute   = keys.find(function(k){ return /^route$/i.test(k); }) || '';
+                }
+
+                statusEl.textContent = '✅ Loaded ' + pbsDatabase.length + ' records';
+                statusEl.className = 'text-xs text-emerald-400 font-medium';
+            },
+            error: function () {
+                statusEl.textContent = "👆 Click '📂 Load CSV' to select the file manually";
+                statusEl.className = 'text-xs text-amber-400 font-medium';
+            }
+        });
+    }
+
+    // ── Search ─────────────────────────────────────────────────────
+    window.searchDrugs = function () {
+        var query      = document.getElementById('searchBox').value.trim().toLowerCase();
+        var resultsDiv = document.getElementById('searchResults');
+
+        if (!query) {
+            resultsDiv.innerHTML = '';
+            resultsDiv.classList.add('hidden');
+            return;
+        }
+
+        var filtered = pbsDatabase.filter(function (drug) {
+            return Object.values(drug).some(function (v) {
+                return v && v.toLowerCase().includes(query);
+            });
+        }).slice(0, 30);
+
+        if (filtered.length === 0) {
+            resultsDiv.innerHTML = '<div class="p-3 text-xs text-slate-500 italic">No matching PBS drugs found</div>';
+            resultsDiv.classList.remove('hidden');
+            return;
+        }
+
+        resultsDiv.innerHTML = filtered.map(function (drug) {
+            var safeJson = JSON.stringify(drug).replace(/'/g, '&apos;');
+            return '<div class="p-3 hover:bg-slate-800 cursor-pointer flex justify-between items-center transition-colors"'
+                + ' onclick=\'addToQueue(' + safeJson + ')\'>'
+                + '<div>'
+                + '<div class="text-sm font-semibold text-slate-200">' + (drug[colBrand] || 'Unknown Brand') + '</div>'
+                + '<div class="text-xs text-slate-400">' + (drug[colGeneric] || '') + '</div>'
+                + '</div>'
+                + '<div class="flex space-x-1 items-center">'
+                + '<span class="text-[10px] px-1.5 py-0.5 rounded font-bold bg-slate-700 text-slate-300">'
+                + (drug[colRoute] || '') + '</span>'
+                + '<span class="text-[10px] px-1.5 py-0.5 rounded font-bold bg-emerald-950 text-emerald-400 border border-emerald-900/30">+ Add</span>'
+                + '</div>'
+                + '</div>';
+        }).join('');
+        resultsDiv.classList.remove('hidden');
+    };
+
+    // ── Queue management ───────────────────────────────────────────
+    function drugId(drug) {
+        return drug.pbs_code || (drug[colBrand] + '|' + drug[colGeneric]);
+    }
+
+    window.addToQueue = function (drug) {
+        var id = drugId(drug);
+        if (currentQueue.some(function (i) { return drugId(i) === id; })) {
+            alert('This medication is already in the queue.');
+            return;
+        }
+        currentQueue.push(drug);
+        updateQueueUI();
+        document.getElementById('searchBox').value = '';
+        document.getElementById('searchResults').classList.add('hidden');
+    };
+
+    window.removeFromQueue = function (id) {
+        currentQueue = currentQueue.filter(function (i) { return drugId(i) !== id; });
+        updateQueueUI();
+    };
+
+    window.clearQueue = function () {
+        currentQueue = [];
+        updateQueueUI();
+    };
+
+    function updateQueueUI() {
+        var queueDiv = document.getElementById('prescriptionQueue');
+        if (currentQueue.length === 0) {
+            queueDiv.innerHTML  = 'No medications added yet. Search above to build the prescription.';
+            queueDiv.className  = 'flex-1 bg-slate-900 border border-slate-700 rounded-lg p-3 overflow-y-auto space-y-2 text-sm text-slate-400 italic';
+            return;
+        }
+        queueDiv.className = 'flex-1 bg-slate-900 border border-slate-700 rounded-lg p-3 overflow-y-auto space-y-2 text-sm text-slate-200';
+        queueDiv.innerHTML = currentQueue.map(function (drug) {
+            return '<div class="flex justify-between items-center bg-slate-800 p-2.5 rounded-lg border border-slate-700 shadow-sm">'
+                + '<div>'
+                + '<div class="font-bold text-amber-400">' + (drug[colBrand] || '') + '</div>'
+                + '<div class="text-xs text-slate-300 font-mono">' + (drug[colGeneric] || '') + '</div>'
+                + '<div class="text-[10px] text-slate-400 mt-0.5">'
+                + (drug.formulation || drug.dose_form || '') + ' | ' + (drug[colRoute] || '') + '</div>'
+                + '</div>'
+                + '<button onclick="removeFromQueue(\'' + drugId(drug).replace(/'/g, "\\'") + '\')"'
+                + ' class="text-slate-500 hover:text-red-400 p-1 font-bold">✕</button>'
+                + '</div>';
+        }).join('');
+    }
+
+    // ── API Key ────────────────────────────────────────────────────
+    window.saveApiKey = function () {
+        var key = document.getElementById('apiKeyInput').value.trim();
+        if (key) {
+            localStorage.setItem('GEMINI_API_KEY', key);
+            alert('✅ API Key saved.');
+        }
+    };
+
+    // ── Clinical Review ────────────────────────────────────────────
+    window.runProClinicalReview = async function () {
+        var resultDiv     = document.getElementById('reviewResult');
+        var loadingStatus = document.getElementById('loadingStatus');
+        var reviewBtn     = document.getElementById('reviewBtn');
+        if (!resultDiv) return;
+
+        // Guard: API key
+        var apiKey = localStorage.getItem('GEMINI_API_KEY') || '';
+        if (!apiKey) {
+            resultDiv.innerHTML = '<p class="text-red-400 font-semibold">❌ Error: Please enter and save a Gemini API Key first.</p>';
+            return;
+        }
+
+        // Guard: queue
+        if (currentQueue.length === 0) {
+            resultDiv.innerHTML = '<p class="text-yellow-400">⚠️ Awaiting medication queue… Add medications to run review.</p>';
+            return;
+        }
+
+        loadingStatus.classList.remove('hidden');
+        reviewBtn.disabled = true;
+        reviewBtn.classList.add('opacity-50');
+        resultDiv.innerHTML = '<p class="text-amber-400">⚡ Pro Reasoning Engine Active… Analyzing clinical parameters...</p>';
+
+        var payload = currentQueue.map(function (drug) {
+            return {
+                pbs_code:     drug.pbs_code            || '',
+                brand_name:   drug[colBrand]            || '',
+                generic_name: drug[colGeneric]           || '',
+                formulation:  drug.formulation          || drug.dose_form || '',
+                route:        drug[colRoute]             || '',
+                atc_code:     drug.atc_code             || drug.atc_codes || '',
+                atc_desc:     drug.atc_description      || ''
+            };
+        });
+
+        var prompt = [
+            'You are an expert Clinical Pharmacist and Medication Safety Officer specialising in',
+            'Australian Pharmacy Practice and ward-level patient safety.',
+            'The following array contains drug records from the Australian PBS database:\n',
+            JSON.stringify(payload, null, 2),
+            '\nPerform a rigorous clinical review based on SHPA "Don\'t Rush to Crush" principles,',
+            'US NLM DailyMed SPL, and authoritative Drug-Drug Interaction databases.',
+            'Format your output in professional English with clear Markdown headings:\n',
+            '### 🚨 I. High-Alert Medication & Clinical Risks',
+            '- Flag critical "Do Not Crush" violations or severe DDIs with explicit rationales.\n',
+            '### ⚙️ II. Pharmaceutical Formulation & Crushing Viability (Galenic Analysis)',
+            '- Analyse each drug. For XR/SR/CR/MR types, explain dose-dumping risks.',
+            '- Provide practical Australian alternatives (IR equivalent, oral liquid, patch, etc.).\n',
+            '### ⚡ III. Cross Drug-Drug & Pharmacodynamic Interactions',
+            '- Cross-examine active ingredients, state mechanism, and monitoring parameters.\n',
+            '### 📋 IV. Dispensary & Ward Checkpoints (Clinical Pearl)',
+            '- Provide 2-3 actionable checkpoints for dispensing and nursing staff.'
+        ].join('\n');
+
+        try {
+            // Direct REST API — no SDK dependency required
+            var apiResponse = await fetch(
+                'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=' + apiKey,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                        generationConfig: { temperature: 0.1 }
+                    })
+                }
+            );
+
+            if (!apiResponse.ok) {
+                var errData = await apiResponse.json();
+                throw new Error((errData.error && errData.error.message) || 'HTTP ' + apiResponse.status);
+            }
+
+            var data = await apiResponse.json();
+
+            // Gemini 2.5 Pro Thinking Model: filter out thought parts, keep answer only
+            var reportText = '';
+            var parts = (data.candidates && data.candidates[0] &&
+                         data.candidates[0].content && data.candidates[0].content.parts) || [];
+            reportText = parts
+                .filter(function (p) { return p.text && !p.thought; })
+                .map(function (p) { return p.text; })
+                .join('');
+
+            // Fallback: if filtering found nothing, try parts[0] directly
+            if (!reportText && parts.length > 0 && parts[0].text) {
+                reportText = parts[0].text;
+            }
+
+            if (!reportText) throw new Error('Empty response. Please check your API key and quota.');
+
+            if (typeof marked !== 'undefined') {
+                resultDiv.innerHTML = marked.parse(reportText);
+            } else {
+                resultDiv.innerHTML = '<pre style="white-space:pre-wrap;">' + reportText + '</pre>';
+            }
+
+        } catch (err) {
+            console.error(err);
+            resultDiv.innerHTML = '<p class="text-red-400 font-semibold">❌ API Error: ' + err.message + '</p>';
+        } finally {
+            loadingStatus.classList.add('hidden');
+            reviewBtn.disabled = false;
+            reviewBtn.classList.remove('opacity-50');
+        }
+    };
+    </script>
+
+</body>
+</html>
