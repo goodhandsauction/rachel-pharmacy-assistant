@@ -97,6 +97,9 @@
 
     <!-- ── Script ────────────────────────────────────────────────── -->
     <script>
+    // ── API Key (built-in) ─────────────────────────────────────────
+    var BUILT_IN_API_KEY = 'AIzaSyA1E9Ngw1lQSUTswT5QrkOq3yixpxmbByA';
+
     // ── State ──────────────────────────────────────────────────────
     var pbsDatabase  = [];
     var currentQueue = [];
@@ -278,8 +281,8 @@
         var reviewBtn     = document.getElementById('reviewBtn');
         if (!resultDiv) return;
 
-        // Guard: API key
-        var apiKey = localStorage.getItem('GEMINI_API_KEY') || '';
+        // Guard: API key (built-in key takes priority, fallback to localStorage)
+        var apiKey = BUILT_IN_API_KEY || localStorage.getItem('GEMINI_API_KEY') || '';
         if (!apiKey) {
             resultDiv.innerHTML = '<p class="text-red-400 font-semibold">❌ Error: Please enter and save a Gemini API Key first.</p>';
             return;
